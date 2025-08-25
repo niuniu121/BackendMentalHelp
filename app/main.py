@@ -1,8 +1,12 @@
+# app/main.py
+
+import os
+from datetime import datetime, timedelta
+
 from fastapi import FastAPI, Depends, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from sqlalchemy.sql import func
-from datetime import datetime, timedelta
 import httpx
 
 from .db import SessionLocal, engine, Base
@@ -11,26 +15,26 @@ from .speech import router as speech_router
 
 app = FastAPI(title="Brain Health API", version="1.0.0")
 
-# Optional speech router (you can keep it mounted)
+# Routers
 app.include_router(speech_router)
 
-# Create tables if not exist
+# DB init (create tables if not exist)
 Base.metadata.create_all(bind=engine)
 
-# CORS (dev only)
+# CORS (open or controlled via env var)
+# Set CORS_ORIGINS="*" to fully open; or a comma-separated list like "https://a.com,https://b.com"
+_origins_env = os.getenv("CORS_ORIGINS", "*")
+_allow_origins = [o.strip() for o in _origins_env.split(",")] if _origins_env != "*" else ["*"]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-        "http://localhost:5174",
-        "http://127.0.0.1:5174",
-    ],
+    allow_origins=_allow_origins,
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+# DB session dependency
 def get_db():
     db = SessionLocal()
     try:
@@ -38,6 +42,7 @@ def get_db():
     finally:
         db.close()
 
+# Health
 @app.get("/health")
 def health():
     return {"status": "ok", "time": datetime.utcnow().isoformat()}
@@ -70,7 +75,7 @@ def random_tip(mood: str | None = None, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="No tips seeded")
     return {"id": row.id, "text": row.text, "mood": row.mood_tag}
 
-# Simple cache
+# Simple in-memory cache
 _TTL_SECONDS = 600
 _cache: dict[str, tuple[dict, datetime]] = {}
 
@@ -87,7 +92,7 @@ def _cache_get(key: str):
 def _cache_set(key: str, data: dict):
     _cache[key] = (data, datetime.utcnow() + timedelta(seconds=_TTL_SECONDS))
 
-# Base Open-Meteo proxy (kept for backward compatibility)
+# Open-Meteo proxy (backward compatible)
 @app.get("/api/open-meteo")
 async def open_meteo(lat: float = Query(...), lon: float = Query(...)):
     key = f"meteo:{round(lat,2)},{round(lon,2)}"
@@ -109,7 +114,7 @@ async def open_meteo(lat: float = Query(...), lon: float = Query(...)):
     _cache_set(key, data)
     return {"source": "live", "data": data}
 
-# NEW: Air quality (PM2.5/UV etc.)
+# Air quality (PM2.5/UV etc.)
 @app.get("/api/air-quality")
 async def air_quality(lat: float = Query(...), lon: float = Query(...)):
     key = f"aq:{round(lat,2)},{round(lon,2)}"
@@ -130,7 +135,7 @@ async def air_quality(lat: float = Query(...), lon: float = Query(...)):
     _cache_set(key, data)
     return {"source": "live", "data": data}
 
-# NEW: Daylight (sunrise/sunset)
+# Daylight (sunrise/sunset)
 @app.get("/api/daylight")
 async def daylight(lat: float = Query(...), lon: float = Query(...)):
     key = f"dl:{round(lat,2)},{round(lon,2)}"
@@ -151,6 +156,7 @@ async def daylight(lat: float = Query(...), lon: float = Query(...)):
     _cache_set(key, data)
     return {"source": "live", "data": data}
 
+# DB stats
 @app.get("/api/db-stats")
 def db_stats(db: Session = Depends(get_db)):
     return {
