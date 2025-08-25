@@ -1,34 +1,36 @@
-# app/main.py
-
-import os
-from datetime import datetime, timedelta
-
 from fastapi import FastAPI, Depends, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from sqlalchemy.sql import func
+from datetime import datetime, timedelta
+import os
 import httpx
 
 from .db import SessionLocal, engine, Base
 from .models import FlipCard, Tip
-from .speech import router as speech_router
 
 app = FastAPI(title="Brain Health API", version="1.0.0")
 
-# Routers
-app.include_router(speech_router)
+# --- optional speech router ---
+ENABLE_SPEECH = os.getenv("ENABLE_SPEECH", "0") == "1"
+if ENABLE_SPEECH:
+    try:
+        from .speech import router as speech_router
+        app.include_router(speech_router)
+    except Exception as e:
+        # avoid crashing if optional deps missing
+        print(f"Speech router disabled: {e}")
 
-# DB init (create tables if not exist)
+# Create tables if not exist
 Base.metadata.create_all(bind=engine)
 
-# CORS (open or controlled via env var)
-# Set CORS_ORIGINS="*" to fully open; or a comma-separated list like "https://a.com,https://b.com"
-_origins_env = os.getenv("CORS_ORIGINS", "*")
-_allow_origins = [o.strip() for o in _origins_env.split(",")] if _origins_env != "*" else ["*"]
+# CORS (use env, fallback to dev-friendly)
+origins = os.getenv("CORS_ORIGINS", "*")
+origins = [o.strip() for o in origins.split(",")] if origins != "*" else ["*"]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=_allow_origins,
+    allow_origins=origins,
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
