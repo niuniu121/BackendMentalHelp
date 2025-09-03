@@ -5,6 +5,7 @@ from sqlalchemy.sql import func
 from datetime import datetime, timedelta
 import os
 import httpx
+from urllib.parse import urlencode
 
 from .db import SessionLocal, engine, Base
 from .models import FlipCard, Tip
@@ -18,16 +19,14 @@ if ENABLE_SPEECH:
         from .speech import router as speech_router
         app.include_router(speech_router)
     except Exception as e:
-        # avoid crashing if optional deps missing
         print(f"Speech router disabled: {e}")
 
 # Create tables if not exist
 Base.metadata.create_all(bind=engine)
 
-# CORS (use env, fallback to dev-friendly)
+# ---- CORS ----
 origins = os.getenv("CORS_ORIGINS", "*")
 origins = [o.strip() for o in origins.split(",")] if origins != "*" else ["*"]
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
@@ -36,7 +35,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# DB session dependency
+# ---- DB session dependency ----
 def get_db():
     db = SessionLocal()
     try:
@@ -44,12 +43,12 @@ def get_db():
     finally:
         db.close()
 
-# Health
+# ---- Health ----
 @app.get("/health")
 def health():
     return {"status": "ok", "time": datetime.utcnow().isoformat()}
 
-# Flip cards
+# ---- Flip cards ----
 @app.get("/api/flip-cards")
 def get_flip_cards(
     limit: int = Query(12, ge=1, le=100),
@@ -66,7 +65,7 @@ def get_flip_cards(
         for r in rows
     ]
 
-# Tips (DB)
+# ---- Tips (DB) ----
 @app.get("/api/tips/random")
 def random_tip(mood: str | None = None, db: Session = Depends(get_db)):
     q = db.query(Tip)
@@ -77,7 +76,7 @@ def random_tip(mood: str | None = None, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="No tips seeded")
     return {"id": row.id, "text": row.text, "mood": row.mood_tag}
 
-# Simple in-memory cache
+# ---- Simple in-memory cache ----
 _TTL_SECONDS = 600
 _cache: dict[str, tuple[dict, datetime]] = {}
 
@@ -94,71 +93,127 @@ def _cache_get(key: str):
 def _cache_set(key: str, data: dict):
     _cache[key] = (data, datetime.utcnow() + timedelta(seconds=_TTL_SECONDS))
 
-# Open-Meteo proxy (backward compatible)
+# ---- Helpers ----
+def _httpx_client():
+    return httpx.AsyncClient(timeout=10.0)
+
+def _cache_key(prefix: str, base_url: str, params: dict) -> str:
+    return f"{prefix}:{base_url}?{urlencode(sorted(params.items()))}"
+
+def _raise_as_http(e: httpx.HTTPStatusError):
+    detail = {"status": e.response.status_code, "url": str(e.request.url)}
+    try:
+        detail["body"] = e.response.json()
+    except Exception:
+        detail["body"] = e.response.text
+    raise HTTPException(status_code=e.response.status_code, detail=detail)
+
+# Open-Meteo (forecast) → UV + current
 @app.get("/api/open-meteo")
 async def open_meteo(lat: float = Query(...), lon: float = Query(...)):
-    key = f"meteo:{round(lat,2)},{round(lon,2)}"
+    base = "https://api.open-meteo.com/v1/forecast"
+    params = {
+        "latitude": lat,
+        "longitude": lon,
+        "current": "temperature_2m,weather_code",
+        "hourly": "uv_index,uv_index_clear_sky,is_day",
+        "timezone": "auto",
+    }
+    key = _cache_key("meteo", base, params)
     cached = _cache_get(key)
     if cached:
-        return {"source": "cache", "data": cached}
+        return {
+            "source": "cache",
+            "data": cached,              # AC: 原始 data
+            "current": cached.get("current", {}),
+            "hourly": cached.get("hourly", {}),
+        }
 
-    url = (
-        "https://api.open-meteo.com/v1/forecast"
-        f"?latitude={lat}&longitude={lon}"
-        "&current=temperature_2m,weather_code"
-        "&timezone=auto"
-    )
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        r = await client.get(url)
-        r.raise_for_status()
+    async with _httpx_client() as client:
+        try:
+            r = await client.get(base, params=params)
+            r.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            _raise_as_http(e)
         data = r.json()
 
     _cache_set(key, data)
-    return {"source": "live", "data": data}
+    return {
+        "source": "live",
+        "data": data,
+        "current": data.get("current", {}),
+        "hourly": data.get("hourly", {}),
+    }
 
-# Air quality (PM2.5/UV etc.)
+# Air quality → PM2.5
 @app.get("/api/air-quality")
 async def air_quality(lat: float = Query(...), lon: float = Query(...)):
-    key = f"aq:{round(lat,2)},{round(lon,2)}"
+    base = "https://air-quality-api.open-meteo.com/v1/air-quality"
+    params = {
+        "latitude": lat,
+        "longitude": lon,
+        "hourly": "pm2_5,pm10,ozone",
+        "timezone": "auto",
+    }
+    key = _cache_key("aq", base, params)
     cached = _cache_get(key)
     if cached:
-        return {"source": "cache", "data": cached}
+        return {
+            "source": "cache",
+            "data": cached,
+            "hourly": cached.get("hourly", {}),
+        }
 
-    url = (
-        "https://air-quality-api.open-meteo.com/v1/air-quality"
-        f"?latitude={lat}&longitude={lon}"
-        "&hourly=pm2_5,pm10,uv_index,uv_index_clear_sky,ozone&timezone=auto"
-    )
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        r = await client.get(url)
-        r.raise_for_status()
+    async with _httpx_client() as client:
+        try:
+            r = await client.get(base, params=params)
+            r.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            _raise_as_http(e)
         data = r.json()
 
     _cache_set(key, data)
-    return {"source": "live", "data": data}
+    return {
+        "source": "live",
+        "data": data,
+        "hourly": data.get("hourly", {}),
+    }
 
-# Daylight (sunrise/sunset)
+# Daylight → sunrise/sunset
 @app.get("/api/daylight")
 async def daylight(lat: float = Query(...), lon: float = Query(...)):
-    key = f"dl:{round(lat,2)},{round(lon,2)}"
+    base = "https://api.open-meteo.com/v1/forecast"
+    params = {
+        "latitude": lat,
+        "longitude": lon,
+        "daily": "sunrise,sunset",
+        "timezone": "auto",
+    }
+    key = _cache_key("dl", base, params)
     cached = _cache_get(key)
     if cached:
-        return {"source": "cache", "data": cached}
+        return {
+            "source": "cache",
+            "data": cached,
+            "daily": cached.get("daily", {}),
+        }
 
-    url = (
-        "https://api.open-meteo.com/v1/forecast"
-        f"?latitude={lat}&longitude={lon}"
-        "&daily=sunrise,sunset&timezone=auto"
-    )
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        r = await client.get(url)
-        r.raise_for_status()
+    async with _httpx_client() as client:
+        try:
+            r = await client.get(base, params=params)
+            r.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            _raise_as_http(e)
         data = r.json()
 
     _cache_set(key, data)
-    return {"source": "live", "data": data}
+    return {
+        "source": "live",
+        "data": data,
+        "daily": data.get("daily", {}),
+    }
 
-# DB stats
+# ---- DB stats ----
 @app.get("/api/db-stats")
 def db_stats(db: Session = Depends(get_db)):
     return {
