@@ -6,3 +6,10 @@ psycopg[binary]==3.2.9
 python-dotenv==1.0.1
 flake8==7.1.0
 black==24.4.2
+
+pandas
+numpy
+scikit-learn
+joblib
+openpyxl
+python-multipart

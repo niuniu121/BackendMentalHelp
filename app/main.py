@@ -10,6 +10,15 @@ from urllib.parse import urlencode
 from .db import SessionLocal, engine, Base
 from .models import FlipCard, Tip
 
+# AI Predict imports 
+from pydantic import BaseModel
+from typing import Optional, List
+import joblib, pandas as pd, numpy as np, re
+from pathlib import Path
+from .db import _Predictor
+
+
+
 app = FastAPI(title="Brain Health API", version="1.0.0")
 
 # --- optional speech router ---
@@ -124,7 +133,7 @@ async def open_meteo(lat: float = Query(...), lon: float = Query(...)):
     if cached:
         return {
             "source": "cache",
-            "data": cached,              # AC: 原始 data
+            "data": cached,            
             "current": cached.get("current", {}),
             "hourly": cached.get("hourly", {}),
         }
@@ -220,3 +229,63 @@ def db_stats(db: Session = Depends(get_db)):
         "flip_card": db.query(FlipCard).count(),
         "tip": db.query(Tip).count(),
     }
+
+#ai model
+# ========= AI Predict: load once on startup =========
+@app.on_event("startup")
+def _load_predictor():
+    default_dir = str((Path(__file__).resolve().parents[1] / "model"))
+    model_dir = os.getenv("AI_MODEL_DIR", default_dir)
+    try:
+        app.state.predictor = _Predictor(model_dir)
+        print(f"[AI] Predictor loaded from {model_dir}")
+    except Exception as e:
+        app.state.predictor = None
+        print(f"[AI] Predictor failed to load: {e}")
+
+# endpoints
+from pydantic import BaseModel
+from typing import Optional, List
+from fastapi import UploadFile, File
+
+class AIPredictRecord(BaseModel):
+    age: Optional[float] = None
+    sleep_quality: int
+    energy_level: int
+    appetite_change: int
+    concentration_difficulty: int
+    worry_frequency: int
+    negative_thoughts_text: Optional[str] = ""
+
+@app.post("/api/ai/predict-json")
+def ai_predict_json(payload: List[AIPredictRecord]):
+    pred = getattr(app.state, "predictor", None)
+    if pred is None:
+        raise HTTPException(status_code=500, detail="Predictor not loaded")
+
+    import pandas as pd
+    df = pd.DataFrame([p.dict() for p in payload])
+    df = df.rename(columns={"negative_thoughts_text": "text"})
+    try:
+        res = pred.predict_df(df)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"prediction failed: {e}")
+    return {"rows": res.to_dict(orient="records"), "count": len(res)}
+
+@app.post("/api/ai/predict-xlsx")
+async def ai_predict_xlsx(file: UploadFile = File(...)):
+    pred = getattr(app.state, "predictor", None)
+    if pred is None:
+        raise HTTPException(status_code=500, detail="Predictor not loaded")
+
+    import pandas as pd
+    content = await file.read()
+    try:
+        df = pd.read_excel(io=content)
+        res = pred.predict_df(df)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"read/predict failed: {e}")
+
+    return {"rows": res.to_dict(orient="records"), "count": len(res)}
+
+
