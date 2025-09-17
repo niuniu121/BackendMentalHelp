@@ -24,7 +24,7 @@ def read_table(path: Path) -> pd.DataFrame:
     if path.suffix.lower() in {".xlsx", ".xls"}:
         df = pd.read_excel(path)
     else:
-        df = pd.read_csv(path)  # 默认 CSV
+        df = pd.read_csv(path)  # default CSV
     return df
 
 def run(file_path: Path):
