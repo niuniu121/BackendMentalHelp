@@ -1,6 +1,6 @@
 from sqlalchemy import Column, Integer, String, Text
 from .db import Base
-from BackendMentalHelp.app.db import Base
+#from BackendMentalHelp.app.db import Base
 class FlipCard(Base):
     __tablename__ = "flip_card"
     id = Column(Integer, primary_key=True, index=True)

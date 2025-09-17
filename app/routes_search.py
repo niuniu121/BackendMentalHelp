@@ -5,11 +5,11 @@ from typing import List
 from sqlalchemy import select, func, or_, MetaData, Table
 from sqlalchemy.orm import Session
 from .db import engine, SessionLocal
-from .models import HealthImpact  # ORM 模型
+from .models import HealthImpact  # ORM model
 
 router = APIRouter()
 
-# ---- DB session dependency（独立于 main.py，避免循环依赖）----
+# DB session dependency
 def get_db():
     db = SessionLocal()
     try:
@@ -17,7 +17,7 @@ def get_db():
     finally:
         db.close()
 
-# ===== 方案 A：ORM 版（你的字段精确匹配，返回结构不变）=====
+# strategy 1
 @router.get("/search-disease")
 def search_disease(
     q: str = Query(..., min_length=1, description="The search keyword"),
