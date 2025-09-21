@@ -5,6 +5,9 @@ import pandas as pd
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, declarative_base
 from pathlib import Path
+from pydantic import BaseModel
+from typing import Optional, List
+
 
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./app.db")
 
@@ -28,18 +31,38 @@ def _preprocess_text(text: str | None) -> str:
     return " ".join(s.split())
 
 
+class AIPredictRecord(BaseModel):
+    little_interest_or_pleasure_in_doing_things: str
+    feeling_down_depressed_or_hopeless: str
+    trouble_falling_or_staying_asleep_or_rsleeping_too_much: str  
+    feeling_tired_or_having_little_energy: str
+    poor_appetite_or_overeating: str
+    Feeling_bad_about_yourself_or_that_you_are_a_failure_or_have_let_yourself_or_your_family_down: str
+    Trouble_concentrating_on_things_such_as_reading_the_newspaper_or_watching_television: str
+    Moving_or_speaking_so_slowly_that_other_people_could_have_noticed_Or_the_opposite_being_so_fidgety_or_restless_that_you_have_been_moving_around_a_lot_more_than_usual: str
+    Thoughts_that_you_would_be_better_off_dead_or_thoughts_of_hurting_yourself_in_some_way: str
+
+
 class _Predictor:
     def __init__(self, model_dir: str):
-        self.model_dir = model_dir
-        self.model = joblib.load(Path(model_dir) / "random_forest_model.pkl")
-        self.scaler = joblib.load(Path(model_dir) / "scaler.pkl")
-        # optional
-        le_path = Path(model_dir) / "label_encoder.pkl"
-        tfidf_path = Path(model_dir) / "tfidf_vectorizer.pkl"
-        self.le = joblib.load(le_path) if le_path.exists() else None
+        self.model_dir = Path(model_dir)
+
+        try:
+            self.model = joblib.load(self.model_dir / "best_model.pkl")
+        except FileNotFoundError:
+            self.model = joblib.load(self.model_dir / "random_forest_model.pkl")
+
+        self.scaler = joblib.load(self.model_dir / "scaler.pkl")
+        self.le = joblib.load(self.model_dir / "label_encoder.pkl")
+
+        tfidf_path = self.model_dir / "tfidf_vectorizer.pkl"
         self.tfidf = joblib.load(tfidf_path) if tfidf_path.exists() else None
 
-    def predict_df(self, df: pd.DataFrame) -> pd.DataFrame:
+    import pandas as pd
+    def predict_df(self, payload: List[AIPredictRecord]) -> pd.DataFrame:
+        df = pd.DataFrame([p.model_dump() for p in payload])
+        df = df.rename(columns={"negative_thoughts_text": "text"})
+
         """
         Steps:
           1) If TF-IDF is available: merge all object columns -> TF-IDF features.
@@ -52,18 +75,20 @@ class _Predictor:
         if self.tfidf is not None:
             text_cols = df.select_dtypes(include=["object"]).columns
             if len(text_cols) > 0:
-                combined = [
-                    " ".join(_preprocess_text(df.iloc[i][c]) for c in text_cols)
-                    for i in range(len(df))
-                ]
-                X_text = self.tfidf.transform(combined).toarray()
-                tf_cols = [f"tfidf_{i}" for i in range(X_text.shape[1])]
+                combined_text = []
+                for idx in range(len(df)):
+                    text_parts = []
+                    for col in text_cols:
+                        text_parts.append(_preprocess_text(df.iloc[idx][col]))
+                    combined_text.append(' '.join(text_parts))
+
+                tfidf_features = self.tfidf.transform(combined_text)
+
+                feature_names = [f'tfidf_{i}' for i in range(tfidf_features.shape[1])]
+                tfidf_df = pd.DataFrame(tfidf_features.toarray(), columns=feature_names, index=df.index)
+
                 df = df.drop(columns=text_cols)
-                df = pd.concat(
-                    [df.reset_index(drop=True),
-                     pd.DataFrame(X_text, columns=tf_cols, index=df.index)],
-                    axis=1
-                )
+                df = pd.concat([df, tfidf_df], axis=1)
         else:
             # simple encode for any remaining object columns
             cat_cols = df.select_dtypes(include=["object"]).columns
@@ -71,7 +96,6 @@ class _Predictor:
                 df[c] = pd.factorize(df[c])[0]
 
         df = df.apply(pd.to_numeric, errors="coerce")
-        # NaN 兜底
         df = df.fillna(0)
 
         # --- 2) auto align with training feature names ---
@@ -89,26 +113,37 @@ class _Predictor:
 
         # --- 3) scale & predict ---
         X = self.scaler.transform(df)
-        y = self.model.predict(X)
-        proba = self.model.predict_proba(X)
+        predictions = self.model.predict(X)
+        probabilities = self.model.predict_proba(X)
+        predictions_decoded = self.le.inverse_transform(predictions)
 
-        # decode label if encoder exists
-        if self.le is not None:
-            try:
-                y_label = self.le.inverse_transform(y)
-            except Exception:
-                y_label = y
-        else:
-            y_label = y
+        out = pd.DataFrame({"predicted_class_code": predictions, "predicted_class": predictions_decoded})
 
-        out = pd.DataFrame({"predicted_class_code": y, "predicted_class": y_label})
         for i, cls in enumerate(self.model.classes_):
-            if self.le is not None:
-                try:
-                    cls_name = self.le.inverse_transform([cls])[0]
-                except Exception:
-                    cls_name = f"class_{cls}"
-            else:
+            try:
+                cls_name = self.le.inverse_transform([cls])[0]
+            except Exception:
                 cls_name = f"class_{cls}"
-            out[f"probability_{cls_name}"] = proba[:, i]
+            out[f"probability_{cls_name}"] = probabilities[:, i]
+
         return out
+
+
+if __name__ == "__main__":
+    predictor = _Predictor("../model")
+    payload = [
+        AIPredictRecord(
+            little_interest_or_pleasure_in_doing_things="Not at all",
+            feeling_down_depressed_or_hopeless="Not at all",
+            trouble_falling_or_staying_asleep_or_rsleeping_too_much="More than half the days",
+            feeling_tired_or_having_little_energy="Several days",
+            poor_appetite_or_overeating="NMore than half the days",
+            Feeling_bad_about_yourself_or_that_you_are_a_failure_or_have_let_yourself_or_your_family_down="More than half the days",
+            Trouble_concentrating_on_things_such_as_reading_the_newspaper_or_watching_television="Several days",
+            Moving_or_speaking_so_slowly_that_other_people_could_have_noticed_Or_the_opposite_being_so_fidgety_or_restless_that_you_have_been_moving_around_a_lot_more_than_usual="Nearly every day",
+            Thoughts_that_you_would_be_better_off_dead_or_thoughts_of_hurting_yourself_in_some_way="More than half the days"
+        )
+    ]
+    out = predictor.predict_df(payload)
+
+    print(out.to_dict(orient="records"))
