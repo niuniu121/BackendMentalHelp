@@ -1,5 +1,5 @@
 # BackendMentalHelp/app/main.py
-from fastapi import FastAPI, Depends, Query, HTTPException
+from fastapi import FastAPI, Depends, Query, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from sqlalchemy.sql import func
@@ -8,21 +8,19 @@ import os
 import httpx
 from urllib.parse import urlencode
 
-from .db import SessionLocal, engine, Base
+from .db import SessionLocal, engine, Base, _Predictor
 from .models import FlipCard, Tip, HealthImpact
 from sqlalchemy import or_
 from .routes_search import router as search_router
 
-from pydantic import BaseModel
-from typing import Optional, List
-import joblib, pandas as pd, numpy as np, re
+from typing import List
+import pandas as pd
 from pathlib import Path
-from .db import _Predictor
 
 
 app = FastAPI(title="Brain Health API", version="1.0.0")
 
-
+# ========== Speech 模块可选 ==========
 ENABLE_SPEECH = os.getenv("ENABLE_SPEECH", "0") == "1"
 if ENABLE_SPEECH:
     try:
@@ -31,10 +29,9 @@ if ENABLE_SPEECH:
     except Exception as e:
         print(f"Speech router disabled: {e}")
 
-
 Base.metadata.create_all(bind=engine)
 
-
+# ========== CORS ==========
 origins = os.getenv("CORS_ORIGINS", "*")
 origins = [o.strip() for o in origins.split(",")] if origins != "*" else ["*"]
 app.add_middleware(
@@ -45,7 +42,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 5) DB session dependency
+# ========== DB session dependency ==========
 def get_db():
     db = SessionLocal()
     try:
@@ -53,12 +50,12 @@ def get_db():
     finally:
         db.close()
 
-#health check
+# ========== Health check ==========
 @app.get("/health")
 def health():
     return {"status": "ok", "time": datetime.utcnow().isoformat()}
 
-# flip-cards
+# ========== Flip Cards ==========
 @app.get("/api/flip-cards")
 def get_flip_cards(
     limit: int = Query(12, ge=1, le=100),
@@ -74,7 +71,8 @@ def get_flip_cards(
         }
         for r in rows
     ]
-# tips
+
+# ========== Tips ==========
 @app.get("/api/tips/random")
 def random_tip(mood: str | None = None, db: Session = Depends(get_db)):
     q = db.query(Tip)
@@ -85,7 +83,7 @@ def random_tip(mood: str | None = None, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="No tips seeded")
     return {"id": row.id, "text": row.text, "mood": row.mood_tag}
 
-# Simple in-memory cache for external API responses
+# ========== Cache for external APIs ==========
 _TTL_SECONDS = 600
 _cache: dict[str, tuple[dict, datetime]] = {}
 
@@ -116,7 +114,7 @@ def _raise_as_http(e: httpx.HTTPStatusError):
         detail["body"] = e.response.text
     raise HTTPException(status_code=e.response.status_code, detail=detail)
 
-# Open-Meteo
+# ========== External APIs ==========
 @app.get("/api/open-meteo")
 async def open_meteo(lat: float = Query(...), lon: float = Query(...)):
     base = "https://api.open-meteo.com/v1/forecast"
@@ -143,7 +141,6 @@ async def open_meteo(lat: float = Query(...), lon: float = Query(...)):
     _cache_set(key, data)
     return {"source": "live", "data": data, "current": data.get("current", {}), "hourly": data.get("hourly", {})}
 
-# Air quality
 @app.get("/api/air-quality")
 async def air_quality(lat: float = Query(...), lon: float = Query(...)):
     base = "https://air-quality-api.open-meteo.com/v1/air-quality"
@@ -164,7 +161,6 @@ async def air_quality(lat: float = Query(...), lon: float = Query(...)):
     _cache_set(key, data)
     return {"source": "live", "data": data, "hourly": data.get("hourly", {})}
 
-# Daylight
 @app.get("/api/daylight")
 async def daylight(lat: float = Query(...), lon: float = Query(...)):
     base = "https://api.open-meteo.com/v1/forecast"
@@ -185,14 +181,12 @@ async def daylight(lat: float = Query(...), lon: float = Query(...)):
     _cache_set(key, data)
     return {"source": "live", "data": data, "daily": data.get("daily", {})}
 
-# DB stats
+# ========== DB Stats ==========
 @app.get("/api/db-stats")
 def db_stats(db: Session = Depends(get_db)):
     return {"flip_card": db.query(FlipCard).count(), "tip": db.query(Tip).count()}
 
-
-#ai model
-# ========= AI Predict: load once on startup =========
+# ========== AI Model ==========
 @app.on_event("startup")
 def _load_predictor():
     default_dir = str((Path(__file__).resolve().parents[1] / "model"))
@@ -204,33 +198,20 @@ def _load_predictor():
         app.state.predictor = None
         print(f"[AI] Predictor failed to load: {e}")
 
-# endpoints
-from pydantic import BaseModel
-from typing import Optional, List
-from fastapi import UploadFile, File
-
-class AIPredictRecord(BaseModel):
-    age: Optional[float] = None
-    sleep_quality: int
-    energy_level: int
-    appetite_change: int
-    concentration_difficulty: int
-    worry_frequency: int
-    negative_thoughts_text: Optional[str] = ""
-
+# ========== AI Endpoints ==========
 @app.post("/api/ai/predict-json")
-def ai_predict_json(payload: List[AIPredictRecord]):
+def ai_predict_json(payload: List[dict]):
+    """前端直接传 list[dict]（PHQ-9 的 9 个问题），这里放宽兼容"""
     pred = getattr(app.state, "predictor", None)
     if pred is None:
         raise HTTPException(status_code=500, detail="Predictor not loaded")
 
-    import pandas as pd
-    df = pd.DataFrame([p.dict() for p in payload])
-    df = df.rename(columns={"negative_thoughts_text": "text"})
     try:
+        df = pd.DataFrame(payload)
         res = pred.predict_df(df)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"prediction failed: {e}")
+
     return {"rows": res.to_dict(orient="records"), "count": len(res)}
 
 @app.post("/api/ai/predict-xlsx")
@@ -239,7 +220,6 @@ async def ai_predict_xlsx(file: UploadFile = File(...)):
     if pred is None:
         raise HTTPException(status_code=500, detail="Predictor not loaded")
 
-    import pandas as pd
     content = await file.read()
     try:
         df = pd.read_excel(io=content)
@@ -249,5 +229,5 @@ async def ai_predict_xlsx(file: UploadFile = File(...)):
 
     return {"rows": res.to_dict(orient="records"), "count": len(res)}
 
-# Include the search router
+# ========== Search Router ==========
 app.include_router(search_router, prefix="/api")
