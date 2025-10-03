@@ -1,5 +1,4 @@
-# BackendMentalHelp/app/main.py
-from fastapi import FastAPI, Depends, Query, HTTPException, UploadFile, File
+from fastapi import FastAPI, Depends, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from sqlalchemy.sql import func
@@ -8,19 +7,21 @@ import os
 import httpx
 from urllib.parse import urlencode
 
-from .db import SessionLocal, engine, Base, _Predictor
-from .models import FlipCard, Tip, HealthImpact
-from sqlalchemy import or_
-from .routes_search import router as search_router
+from .db import SessionLocal, engine, Base
+from .models import FlipCard, Tip
 
-from typing import List
-import pandas as pd
+# AI Predict imports 
+from pydantic import BaseModel
+from typing import Optional, List
+import joblib, pandas as pd, numpy as np, re
 from pathlib import Path
+from .db import _Predictor
+
 
 
 app = FastAPI(title="Brain Health API", version="1.0.0")
 
-# ========== Speech 模块可选 ==========
+# --- optional speech router ---
 ENABLE_SPEECH = os.getenv("ENABLE_SPEECH", "0") == "1"
 if ENABLE_SPEECH:
     try:
@@ -29,9 +30,10 @@ if ENABLE_SPEECH:
     except Exception as e:
         print(f"Speech router disabled: {e}")
 
+# Create tables if not exist
 Base.metadata.create_all(bind=engine)
 
-# ========== CORS ==========
+# ---- CORS ----
 origins = os.getenv("CORS_ORIGINS", "*")
 origins = [o.strip() for o in origins.split(",")] if origins != "*" else ["*"]
 app.add_middleware(
@@ -42,7 +44,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ========== DB session dependency ==========
+# ---- DB session dependency ----
 def get_db():
     db = SessionLocal()
     try:
@@ -50,12 +52,12 @@ def get_db():
     finally:
         db.close()
 
-# ========== Health check ==========
+# ---- Health ----
 @app.get("/health")
 def health():
     return {"status": "ok", "time": datetime.utcnow().isoformat()}
 
-# ========== Flip Cards ==========
+# ---- Flip cards ----
 @app.get("/api/flip-cards")
 def get_flip_cards(
     limit: int = Query(12, ge=1, le=100),
@@ -72,7 +74,7 @@ def get_flip_cards(
         for r in rows
     ]
 
-# ========== Tips ==========
+# ---- Tips (DB) ----
 @app.get("/api/tips/random")
 def random_tip(mood: str | None = None, db: Session = Depends(get_db)):
     q = db.query(Tip)
@@ -83,7 +85,7 @@ def random_tip(mood: str | None = None, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="No tips seeded")
     return {"id": row.id, "text": row.text, "mood": row.mood_tag}
 
-# ========== Cache for external APIs ==========
+# ---- Simple in-memory cache ----
 _TTL_SECONDS = 600
 _cache: dict[str, tuple[dict, datetime]] = {}
 
@@ -100,6 +102,7 @@ def _cache_get(key: str):
 def _cache_set(key: str, data: dict):
     _cache[key] = (data, datetime.utcnow() + timedelta(seconds=_TTL_SECONDS))
 
+# ---- Helpers ----
 def _httpx_client():
     return httpx.AsyncClient(timeout=10.0)
 
@@ -114,7 +117,7 @@ def _raise_as_http(e: httpx.HTTPStatusError):
         detail["body"] = e.response.text
     raise HTTPException(status_code=e.response.status_code, detail=detail)
 
-# ========== External APIs ==========
+# Open-Meteo (forecast) → UV + current
 @app.get("/api/open-meteo")
 async def open_meteo(lat: float = Query(...), lon: float = Query(...)):
     base = "https://api.open-meteo.com/v1/forecast"
@@ -128,7 +131,12 @@ async def open_meteo(lat: float = Query(...), lon: float = Query(...)):
     key = _cache_key("meteo", base, params)
     cached = _cache_get(key)
     if cached:
-        return {"source": "cache", "data": cached, "current": cached.get("current", {}), "hourly": cached.get("hourly", {})}
+        return {
+            "source": "cache",
+            "data": cached,            
+            "current": cached.get("current", {}),
+            "hourly": cached.get("hourly", {}),
+        }
 
     async with _httpx_client() as client:
         try:
@@ -139,16 +147,31 @@ async def open_meteo(lat: float = Query(...), lon: float = Query(...)):
         data = r.json()
 
     _cache_set(key, data)
-    return {"source": "live", "data": data, "current": data.get("current", {}), "hourly": data.get("hourly", {})}
+    return {
+        "source": "live",
+        "data": data,
+        "current": data.get("current", {}),
+        "hourly": data.get("hourly", {}),
+    }
 
+# Air quality → PM2.5
 @app.get("/api/air-quality")
 async def air_quality(lat: float = Query(...), lon: float = Query(...)):
     base = "https://air-quality-api.open-meteo.com/v1/air-quality"
-    params = {"latitude": lat, "longitude": lon, "hourly": "pm2_5,pm10,ozone", "timezone": "auto"}
+    params = {
+        "latitude": lat,
+        "longitude": lon,
+        "hourly": "pm2_5,pm10,ozone",
+        "timezone": "auto",
+    }
     key = _cache_key("aq", base, params)
     cached = _cache_get(key)
     if cached:
-        return {"source": "cache", "data": cached, "hourly": cached.get("hourly", {})}
+        return {
+            "source": "cache",
+            "data": cached,
+            "hourly": cached.get("hourly", {}),
+        }
 
     async with _httpx_client() as client:
         try:
@@ -159,16 +182,30 @@ async def air_quality(lat: float = Query(...), lon: float = Query(...)):
         data = r.json()
 
     _cache_set(key, data)
-    return {"source": "live", "data": data, "hourly": data.get("hourly", {})}
+    return {
+        "source": "live",
+        "data": data,
+        "hourly": data.get("hourly", {}),
+    }
 
+# Daylight → sunrise/sunset
 @app.get("/api/daylight")
 async def daylight(lat: float = Query(...), lon: float = Query(...)):
     base = "https://api.open-meteo.com/v1/forecast"
-    params = {"latitude": lat, "longitude": lon, "daily": "sunrise,sunset", "timezone": "auto"}
+    params = {
+        "latitude": lat,
+        "longitude": lon,
+        "daily": "sunrise,sunset",
+        "timezone": "auto",
+    }
     key = _cache_key("dl", base, params)
     cached = _cache_get(key)
     if cached:
-        return {"source": "cache", "data": cached, "daily": cached.get("daily", {})}
+        return {
+            "source": "cache",
+            "data": cached,
+            "daily": cached.get("daily", {}),
+        }
 
     async with _httpx_client() as client:
         try:
@@ -179,14 +216,22 @@ async def daylight(lat: float = Query(...), lon: float = Query(...)):
         data = r.json()
 
     _cache_set(key, data)
-    return {"source": "live", "data": data, "daily": data.get("daily", {})}
+    return {
+        "source": "live",
+        "data": data,
+        "daily": data.get("daily", {}),
+    }
 
-# ========== DB Stats ==========
+# ---- DB stats ----
 @app.get("/api/db-stats")
 def db_stats(db: Session = Depends(get_db)):
-    return {"flip_card": db.query(FlipCard).count(), "tip": db.query(Tip).count()}
+    return {
+        "flip_card": db.query(FlipCard).count(),
+        "tip": db.query(Tip).count(),
+    }
 
-# ========== AI Model ==========
+#ai model
+# ========= AI Predict: load once on startup =========
 @app.on_event("startup")
 def _load_predictor():
     default_dir = str((Path(__file__).resolve().parents[1] / "model"))
@@ -198,20 +243,33 @@ def _load_predictor():
         app.state.predictor = None
         print(f"[AI] Predictor failed to load: {e}")
 
-# ========== AI Endpoints ==========
+# endpoints
+from pydantic import BaseModel
+from typing import Optional, List
+from fastapi import UploadFile, File
+
+class AIPredictRecord(BaseModel):
+    age: Optional[float] = None
+    sleep_quality: int
+    energy_level: int
+    appetite_change: int
+    concentration_difficulty: int
+    worry_frequency: int
+    negative_thoughts_text: Optional[str] = ""
+
 @app.post("/api/ai/predict-json")
-def ai_predict_json(payload: List[dict]):
-    """前端直接传 list[dict]（PHQ-9 的 9 个问题），这里放宽兼容"""
+def ai_predict_json(payload: List[AIPredictRecord]):
     pred = getattr(app.state, "predictor", None)
     if pred is None:
         raise HTTPException(status_code=500, detail="Predictor not loaded")
 
+    import pandas as pd
+    df = pd.DataFrame([p.dict() for p in payload])
+    df = df.rename(columns={"negative_thoughts_text": "text"})
     try:
-        df = pd.DataFrame(payload)
         res = pred.predict_df(df)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"prediction failed: {e}")
-
     return {"rows": res.to_dict(orient="records"), "count": len(res)}
 
 @app.post("/api/ai/predict-xlsx")
@@ -220,6 +278,7 @@ async def ai_predict_xlsx(file: UploadFile = File(...)):
     if pred is None:
         raise HTTPException(status_code=500, detail="Predictor not loaded")
 
+    import pandas as pd
     content = await file.read()
     try:
         df = pd.read_excel(io=content)
@@ -229,5 +288,6 @@ async def ai_predict_xlsx(file: UploadFile = File(...)):
 
     return {"rows": res.to_dict(orient="records"), "count": len(res)}
 
-# ========== Search Router ==========
-app.include_router(search_router, prefix="/api")
+from .routes_analytics import router as metrics_router
+app.include_router(metrics_router)
+
