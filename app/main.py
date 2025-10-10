@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Depends, Query, HTTPException
+from fastapi import FastAPI, Depends, Query, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from sqlalchemy.sql import func
@@ -6,18 +6,12 @@ from datetime import datetime, timedelta
 import os
 import httpx
 from urllib.parse import urlencode
-
-from .db import SessionLocal, engine, Base
-from .models import FlipCard, Tip
-
-# AI Predict imports 
-from pydantic import BaseModel
-from typing import Optional, List
-import joblib, pandas as pd, numpy as np, re
 from pathlib import Path
-from .db import _Predictor
+from typing import Optional, List
 
-
+from .db import SessionLocal, engine, Base, _Predictor
+from .models import FlipCard, Tip
+from pydantic import BaseModel
 
 app = FastAPI(title="Brain Health API", version="1.0.0")
 
@@ -76,7 +70,7 @@ def get_flip_cards(
 
 # ---- Tips (DB) ----
 @app.get("/api/tips/random")
-def random_tip(mood: str | None = None, db: Session = Depends(get_db)):
+def random_tip(mood: Optional[str] = None, db: Session = Depends(get_db)):
     q = db.query(Tip)
     if mood:
         q = q.filter(Tip.mood_tag == mood)
@@ -230,7 +224,6 @@ def db_stats(db: Session = Depends(get_db)):
         "tip": db.query(Tip).count(),
     }
 
-#ai model
 # ========= AI Predict: load once on startup =========
 @app.on_event("startup")
 def _load_predictor():
@@ -243,11 +236,7 @@ def _load_predictor():
         app.state.predictor = None
         print(f"[AI] Predictor failed to load: {e}")
 
-# endpoints
-from pydantic import BaseModel
-from typing import Optional, List
-from fastapi import UploadFile, File
-
+# ========= AI endpoints =========
 class AIPredictRecord(BaseModel):
     age: Optional[float] = None
     sleep_quality: int
@@ -288,6 +277,9 @@ async def ai_predict_xlsx(file: UploadFile = File(...)):
 
     return {"rows": res.to_dict(orient="records"), "count": len(res)}
 
+# ---- Routers ----
 from .routes_analytics import router as metrics_router
-app.include_router(metrics_router)
+from .routes_search import router as search_router  
 
+app.include_router(metrics_router)
+app.include_router(search_router) 

@@ -1,4 +1,3 @@
-# BackendMentalHelp/app/routes_search.py
 from fastapi import APIRouter, Depends, Query, HTTPException
 from pydantic import BaseModel
 from typing import List
@@ -7,7 +6,8 @@ from sqlalchemy.orm import Session
 from .db import engine, SessionLocal
 from .models import HealthImpact  # ORM model
 
-router = APIRouter()
+router = APIRouter(prefix="/api")
+
 
 # DB session dependency
 def get_db():
