@@ -19,7 +19,6 @@ def map_scale(val, mapping):
     return mapping.get(str(val).strip().lower(), np.nan)
 
 def range_to_midpoint(val):
-    """把区间字符串如 '4-6 hours' 转换成中点"""
     if isinstance(val, str) and "-" in val:
         nums = [float(x) for x in val.replace("hours","").replace("days","").strip().split("-") if x.strip().isdigit()]
         if len(nums) == 2:

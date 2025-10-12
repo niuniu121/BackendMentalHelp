@@ -280,6 +280,9 @@ async def ai_predict_xlsx(file: UploadFile = File(...)):
 # ---- Routers ----
 from .routes_analytics import router as metrics_router
 from .routes_search import router as search_router  
+from .routes_vis_au import router as visuals_router
 
+app.include_router(visuals_router)
 app.include_router(metrics_router)
 app.include_router(search_router) 
+
