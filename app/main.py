@@ -15,7 +15,6 @@ from pydantic import BaseModel
 
 app = FastAPI(title="Brain Health API", version="1.0.0")
 
-# --- optional speech router ---
 ENABLE_SPEECH = os.getenv("ENABLE_SPEECH", "0") == "1"
 if ENABLE_SPEECH:
     try:
@@ -24,10 +23,8 @@ if ENABLE_SPEECH:
     except Exception as e:
         print(f"Speech router disabled: {e}")
 
-# Create tables if not exist
 Base.metadata.create_all(bind=engine)
 
-# ---- CORS ----
 origins = os.getenv("CORS_ORIGINS", "*")
 origins = [o.strip() for o in origins.split(",")] if origins != "*" else ["*"]
 app.add_middleware(
@@ -38,7 +35,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ---- DB session dependency ----
 def get_db():
     db = SessionLocal()
     try:
@@ -46,12 +42,10 @@ def get_db():
     finally:
         db.close()
 
-# ---- Health ----
 @app.get("/health")
 def health():
     return {"status": "ok", "time": datetime.utcnow().isoformat()}
 
-# ---- Flip cards ----
 @app.get("/api/flip-cards")
 def get_flip_cards(
     limit: int = Query(12, ge=1, le=100),
@@ -68,7 +62,6 @@ def get_flip_cards(
         for r in rows
     ]
 
-# ---- Tips (DB) ----
 @app.get("/api/tips/random")
 def random_tip(mood: Optional[str] = None, db: Session = Depends(get_db)):
     q = db.query(Tip)
@@ -79,7 +72,6 @@ def random_tip(mood: Optional[str] = None, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="No tips seeded")
     return {"id": row.id, "text": row.text, "mood": row.mood_tag}
 
-# ---- Simple in-memory cache ----
 _TTL_SECONDS = 600
 _cache: dict[str, tuple[dict, datetime]] = {}
 
@@ -96,7 +88,6 @@ def _cache_get(key: str):
 def _cache_set(key: str, data: dict):
     _cache[key] = (data, datetime.utcnow() + timedelta(seconds=_TTL_SECONDS))
 
-# ---- Helpers ----
 def _httpx_client():
     return httpx.AsyncClient(timeout=10.0)
 
@@ -111,7 +102,6 @@ def _raise_as_http(e: httpx.HTTPStatusError):
         detail["body"] = e.response.text
     raise HTTPException(status_code=e.response.status_code, detail=detail)
 
-# Open-Meteo (forecast) → UV + current
 @app.get("/api/open-meteo")
 async def open_meteo(lat: float = Query(...), lon: float = Query(...)):
     base = "https://api.open-meteo.com/v1/forecast"
@@ -127,7 +117,7 @@ async def open_meteo(lat: float = Query(...), lon: float = Query(...)):
     if cached:
         return {
             "source": "cache",
-            "data": cached,            
+            "data": cached,
             "current": cached.get("current", {}),
             "hourly": cached.get("hourly", {}),
         }
@@ -148,7 +138,6 @@ async def open_meteo(lat: float = Query(...), lon: float = Query(...)):
         "hourly": data.get("hourly", {}),
     }
 
-# Air quality → PM2.5
 @app.get("/api/air-quality")
 async def air_quality(lat: float = Query(...), lon: float = Query(...)):
     base = "https://air-quality-api.open-meteo.com/v1/air-quality"
@@ -182,7 +171,6 @@ async def air_quality(lat: float = Query(...), lon: float = Query(...)):
         "hourly": data.get("hourly", {}),
     }
 
-# Daylight → sunrise/sunset
 @app.get("/api/daylight")
 async def daylight(lat: float = Query(...), lon: float = Query(...)):
     base = "https://api.open-meteo.com/v1/forecast"
@@ -216,7 +204,6 @@ async def daylight(lat: float = Query(...), lon: float = Query(...)):
         "daily": data.get("daily", {}),
     }
 
-# ---- DB stats ----
 @app.get("/api/db-stats")
 def db_stats(db: Session = Depends(get_db)):
     return {
@@ -224,7 +211,6 @@ def db_stats(db: Session = Depends(get_db)):
         "tip": db.query(Tip).count(),
     }
 
-# ========= AI Predict: load once on startup =========
 @app.on_event("startup")
 def _load_predictor():
     default_dir = str((Path(__file__).resolve().parents[1] / "model"))
@@ -236,7 +222,6 @@ def _load_predictor():
         app.state.predictor = None
         print(f"[AI] Predictor failed to load: {e}")
 
-# ========= AI endpoints =========
 class AIPredictRecord(BaseModel):
     little_interest_or_pleasure_in_doing_things: Optional[str] = None
     feeling_down_depressed_or_hopeless: Optional[str]
@@ -279,9 +264,10 @@ async def ai_predict_xlsx(file: UploadFile = File(...)):
 
     return {"rows": res.to_dict(orient="records"), "count": len(res)}
 
-# ---- Routers ----
 from .routes_analytics import router as metrics_router
-from .routes_search import router as search_router  
+from .routes_search import router as search_router
+from .routes_visuals import router as visuals_router
 
 app.include_router(metrics_router)
-app.include_router(search_router) 
+app.include_router(search_router)
+app.include_router(visuals_router)
