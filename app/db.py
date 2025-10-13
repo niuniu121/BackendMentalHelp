@@ -78,9 +78,6 @@ class _Predictor:
                 raise TypeError(f"Unsupported payload type: {type(payload)}")
             df = pd.DataFrame(rows)
 
-        if "negative_thoughts_text" in df.columns and "text" not in df.columns:
-            df = df.rename(columns={"negative_thoughts_text": "text"})
-
         if self.tfidf is not None:
             text_cols = df.select_dtypes(include=["object"]).columns
             if len(text_cols) > 0:

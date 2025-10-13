@@ -238,13 +238,16 @@ def _load_predictor():
 
 # ========= AI endpoints =========
 class AIPredictRecord(BaseModel):
-    age: Optional[float] = None
-    sleep_quality: int
-    energy_level: int
-    appetite_change: int
-    concentration_difficulty: int
-    worry_frequency: int
-    negative_thoughts_text: Optional[str] = ""
+    little_interest_or_pleasure_in_doing_things: Optional[str] = None
+    feeling_down_depressed_or_hopeless: Optional[str]
+    trouble_falling_or_staying_asleep_or_rsleeping_too_much: Optional[str]
+    feeling_tired_or_having_little_energy: Optional[str]
+    poor_appetite_or_overeating: Optional[str]
+    Feeling_bad_about_yourself_or_that_you_are_a_failure_or_have_let_yourself_or_your_family_down: Optional[str]
+    Trouble_concentrating_on_things_such_as_reading_the_newspaper_or_watching_television: Optional[str] = ""
+    Moving_or_speaking_so_slowly_that_other_people_could_have_noticed_Or_the_opposite_being_so_fidgety_or_restless_that_you_have_been_moving_around_a_lot_more_than_usual: Optional[str] = ""
+    Thoughts_that_you_would_be_better_off_dead_or_thoughts_of_hurting_yourself_in_some_way: Optional[str] = ""
+    age: Optional[float] = ""
 
 @app.post("/api/ai/predict-json")
 def ai_predict_json(payload: List[AIPredictRecord]):
@@ -254,7 +257,6 @@ def ai_predict_json(payload: List[AIPredictRecord]):
 
     import pandas as pd
     df = pd.DataFrame([p.dict() for p in payload])
-    df = df.rename(columns={"negative_thoughts_text": "text"})
     try:
         res = pred.predict_df(df)
     except Exception as e:
@@ -280,9 +282,6 @@ async def ai_predict_xlsx(file: UploadFile = File(...)):
 # ---- Routers ----
 from .routes_analytics import router as metrics_router
 from .routes_search import router as search_router  
-from .routes_vis_au import router as visuals_router
 
-app.include_router(visuals_router)
 app.include_router(metrics_router)
 app.include_router(search_router) 
-
