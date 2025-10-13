@@ -1,11 +1,11 @@
 from fastapi import APIRouter, HTTPException
 import pandas as pd
-import os
 from pathlib import Path
 
 router = APIRouter(prefix="/api/visuals", tags=["visuals"])
 
-BASE_DIR = Path(__file__).resolve().parent
+BASE_DIR = Path(__file__).resolve().parents[1]   
+DATA_DIR = BASE_DIR / "app" / "data"
 
 @router.get("/coping_summary")
 def get_coping_summary():

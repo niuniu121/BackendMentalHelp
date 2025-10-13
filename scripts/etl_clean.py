@@ -1,8 +1,10 @@
 import pandas as pd
 import numpy as np
 from sqlalchemy import create_engine
+from pathlib import Path
 
-
+BASE_DIR = Path(__file__).resolve().parents[1]   
+DATA_DIR = BASE_DIR / "app" / "data"
 
 def yes_no_to_binary(val):
     if isinstance(val, str):
@@ -150,12 +152,12 @@ def load_generic(path):
 
 def run_all():
     dfs = []
-    dfs.append(load_lifestyle("/Users/danzhou/Downloads/5120dataset/Mental_Health_Lifestyle_Dataset.csv"))
-    dfs.append(load_stress("/Users/danzhou/Downloads/5120dataset/Student_Mental_Stress_and_Coping_Mechanisms.csv"))
-    dfs.append(load_depression("/Users/danzhou/Downloads/5120dataset/student_depression_dataset.csv"))
-    dfs.append(load_mobile("/Users/danzhou/Downloads/5120dataset/Impact_of_Mobile_Phone_on_Students_Health.csv"))
-    dfs.append(load_global("/Users/danzhou/Downloads/5120dataset/global_mental_health_dataset.csv"))
-    dfs.append(load_generic("/Users/danzhou/Downloads/5120dataset/Mental_Health_Dataset.csv"))
+    dfs.append(load_lifestyle(DATA_DIR / "Mental_Health_Lifestyle_Dataset.csv"))
+    dfs.append(load_stress(DATA_DIR / "Student_Mental_Stress_and_Coping_Mechanisms.csv"))
+    dfs.append(load_depression(DATA_DIR / "student_depression_dataset.csv"))
+    dfs.append(load_mobile(DATA_DIR / "Impact_of_Mobile_Phone_on_Students_Health.csv"))
+    dfs.append(load_global(DATA_DIR / "global_mental_health_dataset.csv"))
+    dfs.append(load_generic(DATA_DIR / "Mental_Health_Dataset.csv"))
 
     combined = pd.concat(dfs, ignore_index=True)
     print("✅ Combined shape:", combined.shape)
