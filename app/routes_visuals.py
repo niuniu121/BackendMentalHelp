@@ -4,11 +4,12 @@ from pathlib import Path
 
 router = APIRouter(prefix="/api/visuals", tags=["visuals"])
 
-BASE_DIR = Path(__file__).resolve().parent / "data"
+ROOT_DIR = Path(__file__).resolve().parents[1]
+DATA_DIR = ROOT_DIR / "data"
 
 @router.get("/coping_summary")
 def get_coping_summary():
-    file_path = BASE_DIR / "coping_group_summary.csv"
+    file_path = DATA_DIR / "coping_group_summary.csv"
     if not file_path.exists():
         raise HTTPException(status_code=404, detail=f"File not found: {file_path}")
 
@@ -30,7 +31,7 @@ def get_coping_summary():
 
 @router.get("/lifetime_disorder")
 def get_lifetime_disorder():
-    file_path = BASE_DIR / "Lifetime_Disorder_Summary.xlsx"
+    file_path = DATA_DIR / "Lifetime_Disorder_Summary.xlsx"
     if not file_path.exists():
         raise HTTPException(status_code=404, detail=f"File not found: {file_path}")
 

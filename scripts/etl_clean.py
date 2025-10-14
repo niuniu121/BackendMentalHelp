@@ -3,8 +3,8 @@ import numpy as np
 from sqlalchemy import create_engine
 from pathlib import Path
 
-BASE_DIR = Path(__file__).resolve().parents[1]   
-DATA_DIR = BASE_DIR / "app" / "data"
+ROOT_DIR = Path(__file__).resolve().parents[1]
+DATA_DIR = ROOT_DIR / "data"
 
 def yes_no_to_binary(val):
     if isinstance(val, str):
